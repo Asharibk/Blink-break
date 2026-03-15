@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>New Tab</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: #0a0a0a;
+            color: #f5f5f7;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        /* Subtle green glow */
+        body::before {
+            content: "";
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -60%);
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(48, 209, 88, 0.055) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .clock {
+            font-size: 92px;
+            font-weight: 200;
+            letter-spacing: -4px;
+            font-variant-numeric: tabular-nums;
+            color: #f5f5f7;
+            line-height: 1;
+            margin-bottom: 8px;
+        }
+
+        .date {
+            font-size: 17px;
+            font-weight: 400;
+            color: #48484a;
+            letter-spacing: 0.2px;
+            margin-bottom: 44px;
+        }
+
+        /* BlinkBreak status */
+        .bb-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 0.5px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #636366;
+            margin-bottom: 36px;
+        }
+
+        .bb-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #30d158;
+            flex-shrink: 0;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        .bb-dot.orange {
+            background: #ff9f0a;
+        }
+
+        .bb-dot.red {
+            background: #ff453a;
+            animation: none;
+        }
+
+        .bb-dot.off {
+            background: #3a3a3c;
+            animation: none;
+        }
+
+        .bb-pill-time {
+            font-variant-numeric: tabular-nums;
+            font-weight: 700;
+            color: #aeaeb2;
+            margin-left: 2px;
+        }
+
+        /* Search */
+        .search-wrap {
+            width: 460px;
+            max-width: 90vw;
+        }
+
+        .search-wrap input {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.055);
+            border: 0.5px solid rgba(255, 255, 255, 0.09);
+            border-radius: 14px;
+            padding: 13px 20px;
+            font-size: 15px;
+            color: #f5f5f7;
+            outline: none;
+            font-family: inherit;
+            transition: background 0.2s, border-color 0.2s;
+            caret-color: #30d158;
+        }
+
+        .search-wrap input::placeholder {
+            color: #3a3a3c;
+        }
+
+        .search-wrap input:focus {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            50% {
+                opacity: 0.35;
+                transform: scale(0.75);
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="clock" id="clock">--:--</div>
+    <div class="date" id="date"></div>
+
+    <div class="bb-pill" id="bbPill">
+        <div class="bb-dot off" id="bbDot"></div>
+        <span id="bbLabel">BlinkBreak</span>
+        <span class="bb-pill-time" id="bbTime"></span>
+    </div>
+
+    <div class="search-wrap">
+        <input id="search" type="text" placeholder="Search or type a URL" autofocus />
+    </div>
+
+    <script>
+        // ── Clock ─────────────────────────────────────────────────────────────────────
+        const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+        function tick() {
+            const now = new Date();
+            const h = now.getHours().toString().padStart(2, "0");
+            const m = now.getMinutes().toString().padStart(2, "0");
+            document.getElementById("clock").textContent = h + ":" + m;
+            document.getElementById("date").textContent =
+                DAYS[now.getDay()] + "  ·  " + MONTHS[now.getMonth()] + " " + now.getDate();
+        }
+        setInterval(tick, 1000);
+        tick();
+
+        // ── Search ────────────────────────────────────────────────────────────────────
+        document.getElementById("search").addEventListener("keydown", e => {
+            if (e.key !== "Enter") return;
+            const v = e.target.value.trim();
+            if (!v) return;
+            const isUrl = /^(https?:\/\/)/.test(v) || (/^[^\s]+\.[a-z]{2,}$/i.test(v) && !v.includes(" "));
+            window.location.href = isUrl
+                ? (v.startsWith("http") ? v : "https://" + v)
+                : "https://www.google.com/search?q=" + encodeURIComponent(v);
+        });
+
+        // ── BlinkBreak status pill ────────────────────────────────────────────────────
+        function updatePill() {
+            try {
+                chrome.storage.local.get(
+                    ["isBreakActive", "isPaused", "pausedTimeLeft", "pausedAt"],
+                    data => {
+                        if (chrome.runtime.lastError) return;
+                        const dot = document.getElementById("bbDot");
+                        const label = document.getElementById("bbLabel");
+                        const time = document.getElementById("bbTime");
+
+                        if (data.isBreakActive) {
+                            dot.className = "bb-dot red";
+                            label.textContent = "Break in progress";
+                            time.textContent = "";
+                            return;
+                        }
+                        if (data.isPaused) {
+                            const ms = Math.max(0, (data.pausedTimeLeft || 0) - (data.pausedAt ? Date.now() - data.pausedAt : 0));
+                            const mm = Math.floor(ms / 60000);
+                            const ss = Math.floor((ms % 60000) / 1000).toString().padStart(2, "0");
+                            dot.className = "bb-dot orange";
+                            label.textContent = "Paused";
+                            time.textContent = mm + ":" + ss;
+                            return;
+                        }
+                        chrome.alarms.get("breakAlarm", alarm => {
+                            if (alarm) {
+                                const ms = Math.max(0, alarm.scheduledTime - Date.now());
+                                const mm = Math.floor(ms / 60000);
+                                const ss = Math.floor((ms % 60000) / 1000).toString().padStart(2, "0");
+                                dot.className = "bb-dot" + (mm < 2 ? " orange" : "");
+                                label.textContent = "Next break in";
+                                time.textContent = mm + ":" + ss;
+                            } else {
+                                dot.className = "bb-dot off";
+                                label.textContent = "BlinkBreak";
+                                time.textContent = "";
+                            }
+                        });
+                    }
+                );
+            } catch (e) { }
+        }
+        setInterval(updatePill, 1000);
+        updatePill();
+    </script>
+
+    <!-- content.js is injected here by the manifest.
+     It handles the break overlay exactly like any other tab.
+     The overlay sits at z-index:2147483647 inside a Shadow DOM,
+     so it always renders above this page's content. -->
+</body>
+
+</html>

@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "BlinkBreak",
+  "version": "2.3",
+  "description": "Pomodoro eye-care companion. Rest your eyes, fix your posture, and hydrate.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "BlinkBreak"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ]
+    }
+  ],
+  "chrome_url_overrides": {
+    "newtab": "newtab.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "welcome.html",
+        "welcome.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "icons": {
+    "128": "icons/icon.png"
+  }
+}
