@@ -1,10 +1,10 @@
 // ─── BlinkBreak content.js ───────────────────────────────────────────────────
 
 const ROUTINES = [
-    { icon: "👀", title: "Look Away", msg: "Look at something 20 feet away for 20 seconds to relax your eye muscles." },
-    { icon: "💧", title: "Stay Hydrated", msg: "Take a deep breath and have a sip of water." },
-    { icon: "🧘", title: "Check Posture", msg: "Sit up straight, drop your shoulders, and un-clench your jaw." },
-    { icon: "😌", title: "Blink Slowly", msg: "Close your eyes and blink slowly 10 times to rehydrate them." }
+  { icon: "👀", title: "Look Away",     msg: "Look at something 20 feet away for 20 seconds to relax your eye muscles." },
+  { icon: "💧", title: "Stay Hydrated", msg: "Take a deep breath and have a sip of water." },
+  { icon: "🧘", title: "Check Posture", msg: "Sit up straight, drop your shoulders, and un-clench your jaw." },
+  { icon: "😌", title: "Blink Slowly",  msg: "Close your eyes and blink slowly 10 times to rehydrate them." }
 ];
 
 const OVERLAY_CSS = `
@@ -45,97 +45,111 @@ const OVERLAY_CSS = `
   @keyframes bb-float { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-6px); } }
 `;
 
-// ─── seenBreakId — persisted on window across re-injections ──────────────────
+// ─── seenBreakId ──────────────────────────────────────────────────────────────
+// Persisted on window so it survives content.js re-injection within the same
+// page lifetime. Tracks which breakId this tab has already rendered.
 if (typeof window.__bbSeenId === "undefined") window.__bbSeenId = null;
 const getSeenId = () => window.__bbSeenId;
 const setSeenId = (id) => { window.__bbSeenId = id; };
 
-// ─── syncWithStorage — single source of truth ────────────────────────────────
-// Called from every trigger path. Reads storage and reacts.
+// ─── syncWithStorage ──────────────────────────────────────────────────────────
+// Single function called from every trigger path.
+// Reads storage and decides whether to show or remove the overlay.
 function syncWithStorage() {
-    try {
-        chrome.storage.local.get(
-            ["isBreakActive", "breakId", "breakDuration", "breakStartedAt", "breakRoutineIndex"],
-            (state) => {
-                if (chrome.runtime.lastError) return;
-                const overlayUp = !!document.getElementById("bb-host");
+  try {
+    chrome.storage.local.get(
+      ["isBreakActive", "breakId", "breakDuration", "breakStartedAt", "breakRoutineIndex"],
+      (state) => {
+        if (chrome.runtime.lastError) return;
 
-                if (state.isBreakActive && state.breakId) {
-                    if (!overlayUp && state.breakId !== getSeenId()) {
-                        setSeenId(state.breakId);
-                        showOverlay(state);
-                    }
-                } else if (!state.isBreakActive && overlayUp) {
-                    removeOverlay();
-                }
-            }
-        );
-    } catch (e) { }
+        const overlayUp = !!document.getElementById("bb-host");
+
+        if (state.isBreakActive && state.breakId) {
+          if (!overlayUp && state.breakId !== getSeenId()) {
+            // CRITICAL FIX: Do NOT set seenId here — only set it inside
+            // showOverlay() after we confirm the overlay will actually render.
+            // Setting it here caused background tabs (where startAt <= 0) to
+            // mark the break as "seen" and then send breakFinished, killing
+            // the break before any tab showed the overlay.
+            showOverlay(state);
+          }
+        } else if (!state.isBreakActive && overlayUp) {
+          removeOverlay();
+        }
+      }
+    );
+  } catch (e) { /* extension context gone */ }
 }
 
 // ─── Trigger 1: immediate on injection ───────────────────────────────────────
 syncWithStorage();
 
-// ─── Trigger 2: storage.onChanged ────────────────────────────────────────────
-// Fires when storage changes — works when the content script context is alive.
-// NOTE: this does NOT fire in contexts killed by Energy Saver/Memory Saver.
-// Those are caught by the visibilitychange + poll triggers below.
+// ─── Trigger 2: message from background (fast path) ──────────────────────────
+// background.js sends showBreak/removeBreak after writing storage.
+// This is the fastest delivery for tabs with a live context.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.action === "showBreak" || msg.action === "removeBreak") {
+    syncWithStorage();
+  }
+});
+
+// ─── Trigger 3: storage.onChanged ────────────────────────────────────────────
+// Fires when storage changes in tabs with a live extension context.
+// Does NOT fire in frozen contexts (Energy Saver / Memory Saver).
 chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local") return;
-    if ("isBreakActive" in changes || "breakId" in changes) {
-        syncWithStorage();
-    }
+  if (area !== "local") return;
+  if ("isBreakActive" in changes || "breakId" in changes) {
+    syncWithStorage();
+  }
 });
 
-// ─── Trigger 3: visibility change ────────────────────────────────────────────
-// Fires the instant user switches TO this tab.
-// We call syncWithStorage directly — this handles the case where storage
-// was already set (onChanged already fired and was missed).
+// ─── Trigger 4: visibilitychange ─────────────────────────────────────────────
+// Fires the instant user switches TO this tab — catches frozen tabs
+// that missed the storage change and the message entirely.
 document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) syncWithStorage();
+  if (!document.hidden) syncWithStorage();
 });
 
-// ─── Trigger 4: window focus ─────────────────────────────────────────────────
+// ─── Trigger 5: window focus ─────────────────────────────────────────────────
+// Covers switching between Chrome windows.
 window.addEventListener("focus", syncWithStorage);
 
-// ─── Trigger 5: poll ─────────────────────────────────────────────────────────
-// Runs every 1s. This is the guaranteed delivery for Energy Saver tabs.
-// storage.onChanged does NOT fire in frozen contexts — the poll catches
-// everything once the tab thaws (which happens when you switch to it,
-// triggering visibilitychange BEFORE the poll anyway).
-// 1s interval is fine — chrome.storage.local reads are cached in-process.
+// ─── Trigger 6: poll — final safety net ──────────────────────────────────────
+// Catches any remaining edge cases: deeply frozen tabs, slow thaw, etc.
+// 1s interval is fine — chrome.storage.local reads are fast cached reads.
 if (!window.__bbPolling) {
-    window.__bbPolling = true;
-    setInterval(syncWithStorage, 1000);
+  window.__bbPolling = true;
+  setInterval(syncWithStorage, 1000);
 }
 
 // ─── Overlay ─────────────────────────────────────────────────────────────────
 function showOverlay(state) {
-    if (document.getElementById("bb-host")) return;
+  if (document.getElementById("bb-host")) return;
 
-    const totalTime = Number(state.breakDuration) || 300;
-    const elapsed = state.breakStartedAt ? Math.floor((Date.now() - state.breakStartedAt) / 1000) : 0;
-    const startAt = Math.max(0, totalTime - elapsed);
+  const totalTime = Number(state.breakDuration) || 300;
+  const elapsed   = state.breakStartedAt
+    ? Math.floor((Date.now() - state.breakStartedAt) / 1000)
+    : 0;
+  const startAt   = Math.max(0, totalTime - elapsed);
 
-    // Break already over — signal background but don't show overlay
-    // Only do this if THIS tab actually had the overlay (i.e. seenBreakId matches)
-    // Prevents background tabs from prematurely ending the break
-    if (startAt <= 0) {
-        if (getSeenId() === state.breakId) {
-            safeSend({ action: "breakFinished", breakId: state.breakId });
-        }
-        return;
-    }
+  // CRITICAL FIX: Break already expired before this tab could show it.
+  // Do NOT set seenId and do NOT send breakFinished — another tab that
+  // actually showed the overlay is responsible for sending breakFinished.
+  // This tab simply does nothing, preventing premature break termination.
+  if (startAt <= 0) return;
 
-    const routine = ROUTINES[(state.breakRoutineIndex || 0) % ROUTINES.length];
-    const C = 2 * Math.PI * 48;
+  // Only mark as seen NOW — after we've confirmed the overlay will render.
+  setSeenId(state.breakId);
 
-    const host = document.createElement("div");
-    host.id = "bb-host";
-    host.style.cssText = "all:initial;position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483647;pointer-events:auto;";
-    const shadow = host.attachShadow({ mode: "closed" });
+  const routine = ROUTINES[(state.breakRoutineIndex || 0) % ROUTINES.length];
+  const C       = 2 * Math.PI * 48;
 
-    shadow.innerHTML = `
+  const host   = document.createElement("div");
+  host.id      = "bb-host";
+  host.style.cssText = "all:initial;position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483647;pointer-events:auto;";
+  const shadow = host.attachShadow({ mode: "closed" });
+
+  shadow.innerHTML = `
     <style>${OVERLAY_CSS}</style>
     <div id="bb-overlay">
       <div class="bb-card">
@@ -163,70 +177,86 @@ function showOverlay(state) {
       </div>
     </div>`;
 
-    document.documentElement.appendChild(host);
+  document.documentElement.appendChild(host);
 
-    const currentBreakId = state.breakId;
+  const currentBreakId = state.breakId;
 
-    shadow.getElementById("bb-skip").addEventListener("click", () => {
-        removeOverlay();
-        safeSend({ action: "breakFinished", breakId: currentBreakId });
-    });
-    shadow.getElementById("bb-snooze").addEventListener("click", () => {
-        removeOverlay();
-        safeSend({ action: "snooze", minutes: 5 });
-    });
-
-    // ── Tick engine ──────────────────────────────────────────────────────────
-    const ring = shadow.querySelector("circle.progress");
-    const timeEl = shadow.getElementById("bb-time");
-    const startedAt = state.breakStartedAt || Date.now();
-    let lastSec = -1;
-    let rafId = null;
-    let bgTimer = null;
-
-    function tick() {
-        if (!document.getElementById("bb-host")) { stop(); return; }
-        const sec = Math.max(0, totalTime - Math.floor((Date.now() - startedAt) / 1000));
-        if (sec !== lastSec) {
-            lastSec = sec;
-            if (timeEl) timeEl.textContent = sec;
-            if (ring) ring.style.strokeDashoffset = C * (1 - sec / totalTime);
-        }
-        if (sec <= 0) {
-            stop();
-            removeOverlay();
-            safeSend({ action: "breakFinished", breakId: currentBreakId });
-            return;
-        }
-        next();
+  // Escape key skips the break
+  function onKeyDown(e) {
+    if (e.key === "Escape") {
+      document.removeEventListener("keydown", onKeyDown);
+      removeOverlay();
+      safeSend({ action: "breakFinished", breakId: currentBreakId });
     }
+  }
+  document.addEventListener("keydown", onKeyDown);
 
-    function next() {
-        if (document.hidden) { bgTimer = setTimeout(tick, 500); }
-        else { rafId = requestAnimationFrame(tick); }
+  shadow.getElementById("bb-skip").addEventListener("click", () => {
+    document.removeEventListener("keydown", onKeyDown);
+    removeOverlay();
+    safeSend({ action: "breakFinished", breakId: currentBreakId });
+  });
+
+  shadow.getElementById("bb-snooze").addEventListener("click", () => {
+    document.removeEventListener("keydown", onKeyDown);
+    removeOverlay();
+    safeSend({ action: "snooze", minutes: 5 });
+  });
+
+  // ── Tick engine ──────────────────────────────────────────────────────────
+  const ring      = shadow.querySelector("circle.progress");
+  const timeEl    = shadow.getElementById("bb-time");
+  const startedAt = state.breakStartedAt || Date.now();
+  let lastSec     = -1;
+  let rafId       = null;
+  let bgTimer     = null;
+
+  function tick() {
+    if (!document.getElementById("bb-host")) { stop(); return; }
+    const sec = Math.max(0, totalTime - Math.floor((Date.now() - startedAt) / 1000));
+    if (sec !== lastSec) {
+      lastSec = sec;
+      if (timeEl) timeEl.textContent = sec;
+      if (ring)   ring.style.strokeDashoffset = C * (1 - sec / totalTime);
     }
-
-    function stop() {
-        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-        if (bgTimer) { clearTimeout(bgTimer); bgTimer = null; }
-        document.removeEventListener("visibilitychange", onVis);
+    if (sec <= 0) {
+      stop();
+      removeOverlay();
+      safeSend({ action: "breakFinished", breakId: currentBreakId });
+      return;
     }
+    next();
+  }
 
-    function onVis() { if (!document.hidden) { stop(); tick(); } }
-    document.addEventListener("visibilitychange", onVis);
+  function next() {
+    if (document.hidden) { bgTimer = setTimeout(tick, 500); }
+    else                 { rafId   = requestAnimationFrame(tick); }
+  }
 
-    host.__bbStop = stop;
-    tick();
+  function stop() {
+    if (rafId)   { cancelAnimationFrame(rafId); rafId = null; }
+    if (bgTimer) { clearTimeout(bgTimer); bgTimer = null; }
+    document.removeEventListener("visibilitychange", onVis);
+  }
+
+  function onVis() {
+    if (!document.hidden) { stop(); tick(); }
+  }
+  document.addEventListener("visibilitychange", onVis);
+
+  host.__bbStop = stop;
+  tick();
 }
 
 function removeOverlay() {
-    const host = document.getElementById("bb-host");
-    if (!host) return;
-    if (typeof host.__bbStop === "function") host.__bbStop();
-    host.remove();
+  const host = document.getElementById("bb-host");
+  if (!host) return;
+  if (typeof host.__bbStop === "function") host.__bbStop();
+  host.remove();
 }
 
 function safeSend(msg) {
-    try { chrome.runtime.sendMessage(msg, () => { void chrome.runtime.lastError; }); }
-    catch (e) { }
+  try {
+    chrome.runtime.sendMessage(msg, () => { void chrome.runtime.lastError; });
+  } catch (e) { /* extension context invalidated */ }
 }
